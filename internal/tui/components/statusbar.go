@@ -27,6 +27,7 @@ func (s *StatusBar) SetResource(r string)  { s.resource = r }
 func (s *StatusBar) SetMode(m string)      { s.mode = m }
 func (s *StatusBar) SetItems(n int)        { s.items = n }
 func (s *StatusBar) SetError(e string)     { s.error = e }
+func (s *StatusBar) ClearError()           { s.error = "" }
 
 func (s *StatusBar) View(width int) string {
 	clusterInfo := lipgloss.NewStyle().

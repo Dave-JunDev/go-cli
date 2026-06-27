@@ -135,6 +135,11 @@ func (m *AppModel) connectToCluster() tea.Cmd {
 		m.namespaceModel.SetSize(m.width, m.height)
 		m.resourceModel.SetResourceManager(m.resourceMgr)
 		m.resourceModel.SetCluster(m.cluster)
+
+		types, discErr := m.resourceMgr.DiscoverResourceTypes()
+		if discErr == nil && len(types) > 0 {
+			m.resourceModel.SetResourceTypes(types)
+		}
 		m.resourceModel.ResetView()
 		m.resourceModel.SetSize(m.width, m.height)
 		m.detailModel.SetResourceManager(m.resourceMgr)
@@ -143,6 +148,7 @@ func (m *AppModel) connectToCluster() tea.Cmd {
 		m.currentView = model.NamespaceSelect
 		m.statusBar.SetCluster(m.cluster.Name)
 		m.statusBar.SetMode("namespace")
+		m.statusBar.ClearError()
 
 		return connectedMsg{}
 	}
@@ -164,6 +170,7 @@ func (m *AppModel) updateNamespaces(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = model.ResourceList
 		m.statusBar.SetNamespace(ns.Namespace)
 		m.statusBar.SetMode("resources")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -173,6 +180,7 @@ func (m *AppModel) updateNamespaces(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = model.ClusterSelect
 		m.statusBar.SetMode("clusters")
 		m.statusBar.SetNamespace("")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -194,6 +202,7 @@ func (m *AppModel) updateResources(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.currentView = model.ResourceDetail
 		m.statusBar.SetMode("detail")
 		m.statusBar.SetResource(res.Resource.Name)
+		m.statusBar.ClearError()
 		return m, m.detailModel.Init()
 	}
 
@@ -202,6 +211,7 @@ func (m *AppModel) updateResources(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logModel.SetSize(m.width, m.height)
 		m.currentView = model.LogView
 		m.statusBar.SetMode("logs")
+		m.statusBar.ClearError()
 		return m, m.logModel.Init()
 	}
 
@@ -209,6 +219,7 @@ func (m *AppModel) updateResources(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.namespaceModel.SetSize(m.width, m.height)
 		m.currentView = model.NamespaceSelect
 		m.statusBar.SetMode("namespace")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -225,8 +236,20 @@ func (m *AppModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if ys, ok := msg.(views.ShowYamlMsg); ok {
 		m.yamlModel.SetYAML(ys.YAML, ys.Resource)
 		m.yamlModel.SetSize(m.width, m.height)
+		m.yamlModel.SetMode("YAML")
 		m.currentView = model.YamlView
 		m.statusBar.SetMode("yaml")
+		m.statusBar.ClearError()
+		return m, nil
+	}
+
+	if ds, ok := msg.(views.ShowDescribeMsg); ok {
+		m.yamlModel.SetYAML(ds.Describe, ds.Resource)
+		m.yamlModel.SetSize(m.width, m.height)
+		m.yamlModel.SetMode("Describe")
+		m.currentView = model.YamlView
+		m.statusBar.SetMode("describe")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -235,6 +258,7 @@ func (m *AppModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.logModel.SetSize(m.width, m.height)
 		m.currentView = model.LogView
 		m.statusBar.SetMode("logs")
+		m.statusBar.ClearError()
 		return m, m.logModel.Init()
 	}
 
@@ -242,6 +266,7 @@ func (m *AppModel) updateDetail(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resourceModel.SetSize(m.width, m.height)
 		m.currentView = model.ResourceList
 		m.statusBar.SetMode("resources")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -259,6 +284,7 @@ func (m *AppModel) updateLogs(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resourceModel.SetSize(m.width, m.height)
 		m.currentView = model.ResourceList
 		m.statusBar.SetMode("resources")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 
@@ -277,6 +303,7 @@ func (m *AppModel) updateYaml(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailModel.SetHeight(m.height)
 		m.currentView = model.ResourceDetail
 		m.statusBar.SetMode("detail")
+		m.statusBar.ClearError()
 		return m, nil
 	}
 

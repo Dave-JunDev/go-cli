@@ -5,9 +5,9 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/dave/kube-tui/internal/k8s"
 	"github.com/dave/kube-tui/internal/model"
@@ -37,17 +37,14 @@ type ResourceModel struct {
 	selectingType  bool
 	width          int
 	height         int
-	vp             viewport.Model
 }
 
 func NewResourceModel() *ResourceModel {
-	vp := viewport.New(80, 20)
 	return &ResourceModel{
 		filter:        components.NewFilter("Search resources...", nil),
 		resourceTypes: model.ResourceTypes,
 		typeFiltered:  model.ResourceTypes,
 		selectingType: true,
-		vp:            vp,
 	}
 }
 
@@ -63,6 +60,11 @@ func (m *ResourceModel) SetCluster(c model.Cluster) {
 	m.cluster = c
 }
 
+func (m *ResourceModel) SetResourceTypes(types []model.ResourceType) {
+	m.resourceTypes = types
+	m.typeFiltered = types
+}
+
 func (m *ResourceModel) SetNamespace(ns string) {
 	m.namespace = ns
 }
@@ -71,13 +73,6 @@ func (m *ResourceModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
 	m.filter.SetWidth(theme.ContentWidth(w) - 4)
-	m.vp.Width = theme.ViewportWidth(w)
-	m.vp.Height = m.vpHeight()
-}
-
-func (m *ResourceModel) vpHeight() int {
-	// Reserve: title (1) + nsInfo (1) + countInfo (1) + blank (1) + header (1) + filter (1) + blank (1) + help (1) = 8
-	return m.height - 8
 }
 
 func (m *ResourceModel) ResetView() {
@@ -118,6 +113,7 @@ func (m *ResourceModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.filtered = msg.resources
 		m.loading = false
 		m.cursor = 0
+		m.sortFiltered()
 		if m.statusBar != nil {
 			m.statusBar.SetItems(len(m.resources))
 			m.statusBar.SetResource(m.resourceType)
@@ -209,7 +205,6 @@ func (m *ResourceModel) handleTypeSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.typeCursor = 0
 			}
 		}
-		m.scrollTypeCursor()
 		switch keyMsg.String() {
 		case "esc":
 			m.filter.Blur()
@@ -228,25 +223,21 @@ func (m *ResourceModel) handleTypeSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.typeCursor > 0 {
 				m.typeCursor--
-				m.scrollTypeCursor()
 			}
 		case "down", "j":
 			if m.typeCursor < len(m.typeFiltered)-1 {
 				m.typeCursor++
-				m.scrollTypeCursor()
 			}
 		case "pgup":
-			m.typeCursor -= m.vp.Height
+			m.typeCursor -= 10
 			if m.typeCursor < 0 {
 				m.typeCursor = 0
 			}
-			m.scrollTypeCursor()
 		case "pgdown", " ":
-			m.typeCursor += m.vp.Height
+			m.typeCursor += 10
 			if m.typeCursor >= len(m.typeFiltered) {
 				m.typeCursor = len(m.typeFiltered) - 1
 			}
-			m.scrollTypeCursor()
 		}
 		return m, cmd
 	}
@@ -255,28 +246,24 @@ func (m *ResourceModel) handleTypeSelection(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.typeCursor > 0 {
 			m.typeCursor--
-			m.scrollTypeCursor()
 		}
 
 	case "down", "j":
 		if m.typeCursor < len(m.typeFiltered)-1 {
 			m.typeCursor++
-			m.scrollTypeCursor()
 		}
 
 	case "pgup":
-		m.typeCursor -= m.vp.Height
+		m.typeCursor -= 10
 		if m.typeCursor < 0 {
 			m.typeCursor = 0
 		}
-		m.scrollTypeCursor()
 
 	case "pgdown", " ":
-		m.typeCursor += m.vp.Height
+		m.typeCursor += 10
 		if m.typeCursor >= len(m.typeFiltered) {
 			m.typeCursor = len(m.typeFiltered) - 1
 		}
-		m.scrollTypeCursor()
 
 	case "enter":
 		if len(m.typeFiltered) > 0 {
@@ -308,13 +295,14 @@ func (m *ResourceModel) applyTypeFilter() {
 		m.typeFiltered = m.resourceTypes
 		return
 	}
+	targets := make([]string, len(m.resourceTypes))
+	for i, rt := range m.resourceTypes {
+		targets[i] = rt.Name + " " + rt.Plural + " " + rt.Short
+	}
+	matches := fuzzy.Find(query, targets)
 	var filtered []model.ResourceType
-	for _, rt := range m.resourceTypes {
-		if caseInsensitiveContains(rt.Name, query) ||
-			caseInsensitiveContains(rt.Plural, query) ||
-			caseInsensitiveContains(rt.Short, query) {
-			filtered = append(filtered, rt)
-		}
+	for _, match := range matches {
+		filtered = append(filtered, m.resourceTypes[match.Index])
 	}
 	m.typeFiltered = filtered
 }
@@ -333,28 +321,24 @@ func (m *ResourceModel) handleResourceList(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	case "up", "k":
 		if m.cursor > 0 {
 			m.cursor--
-			m.scrollToCursor()
 		}
 
 	case "down", "j":
 		if m.cursor < len(m.filtered)-1 {
 			m.cursor++
-			m.scrollToCursor()
 		}
 
 	case "pgup":
-		m.cursor -= m.vp.Height
+		m.cursor -= 10
 		if m.cursor < 0 {
 			m.cursor = 0
 		}
-		m.scrollToCursor()
 
 	case "pgdown", " ":
-		m.cursor += m.vp.Height
+		m.cursor += 10
 		if m.cursor >= len(m.filtered) {
 			m.cursor = len(m.filtered) - 1
 		}
-		m.scrollToCursor()
 
 	case "/":
 		return m, m.filter.Focus()
@@ -406,35 +390,31 @@ func (m *ResourceModel) handleResourceList(msg tea.KeyMsg) (tea.Model, tea.Cmd) 
 	return m, nil
 }
 
-func (m *ResourceModel) scrollToCursor() {
-	row := m.cursor
-	viewportStart := m.vp.YOffset
-	viewportEnd := viewportStart + m.vp.Height - 1
-	if row < viewportStart {
-		m.vp.SetYOffset(row)
-	} else if row > viewportEnd {
-		m.vp.SetYOffset(row - m.vp.Height + 1)
-	}
-	if m.vp.YOffset < 0 {
-		m.vp.YOffset = 0
-	}
+func (m *ResourceModel) sortFiltered() {
+	sort.Slice(m.filtered, func(i, j int) bool {
+		return m.filtered[i].Name < m.filtered[j].Name
+	})
 }
 
 func (m *ResourceModel) applyFilter() {
 	query := m.filter.Value()
 	if query == "" {
 		m.filtered = m.resources
+		m.sortFiltered()
 		return
 	}
 
+	targets := make([]string, len(m.resources))
+	for i, r := range m.resources {
+		targets[i] = r.Name + " " + r.Status
+	}
+	matches := fuzzy.Find(query, targets)
 	var filtered []model.K8sResource
-	for _, r := range m.resources {
-		if caseInsensitiveContains(r.Name, query) ||
-			caseInsensitiveContains(r.Status, query) {
-			filtered = append(filtered, r)
-		}
+	for _, match := range matches {
+		filtered = append(filtered, m.resources[match.Index])
 	}
 	m.filtered = filtered
+	m.sortFiltered()
 }
 
 func (m *ResourceModel) View() string {
@@ -447,16 +427,10 @@ func (m *ResourceModel) View() string {
 	}
 
 	cw := theme.ContentWidth(m.width)
-	m.vp.Width = theme.ViewportWidth(m.width)
-	m.vp.Height = m.vpHeight()
 
 	title := theme.TitleStyle.Copy().Width(cw).Render(fmt.Sprintf("☰  %s", m.resourceType))
 	nsInfo := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" Namespace: %s", m.namespace))
 	countInfo := theme.ResourceCountStyle.Render(fmt.Sprintf(" %d resources", len(m.filtered)))
-
-	sort.Slice(m.filtered, func(i, j int) bool {
-		return m.filtered[i].Name < m.filtered[j].Name
-	})
 
 	colName := cw - 30
 	if colName < 20 {
@@ -477,8 +451,16 @@ func (m *ResourceModel) View() string {
 	}
 	header := headerLipgloss.Render(lipgloss.JoinHorizontal(lipgloss.Top, headerCells...))
 
-	rows := make([]string, len(m.filtered))
-	for i, r := range m.filtered {
+	maxRows := m.height - 8
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	totalRows := len(m.filtered)
+	start, end := visibleWindow(m.cursor, totalRows, maxRows)
+
+	rowStrs := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		r := m.filtered[i]
 		var cells []string
 		name := theme.Truncate(r.Name, widths[0])
 		status := theme.Truncate(r.Status, widths[1])
@@ -500,10 +482,10 @@ func (m *ResourceModel) View() string {
 		} else {
 			line = "  " + line
 		}
-		rows[i] = line
+		rowStrs = append(rowStrs, line)
 	}
 
-	m.vp.SetContent(strings.Join(rows, "\n"))
+	content := strings.Join(rowStrs, "\n")
 
 	m.filter.SetWidth(cw - 4)
 	filterView := m.filter.View()
@@ -514,7 +496,7 @@ func (m *ResourceModel) View() string {
 		countInfo,
 		"\n",
 		header,
-		m.vp.View(),
+		content,
 		filterView,
 		"\n",
 		theme.HelpStyle.Render(" ↑↓ navigate • Enter detail • / search • r refresh • l logs • t type • q back • ← selector"),
@@ -524,8 +506,8 @@ func (m *ResourceModel) View() string {
 func (m *ResourceModel) viewTypeSelector() string {
 	cw := theme.ContentWidth(m.width)
 
-	title := theme.TitleStyle.Copy().Width(cw).Render("☰  RESOURCE TYPE SELECTOR")
-	nsInfo := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" Namespace: %s", m.namespace))
+	title := theme.TitleStyle.Copy().Width(cw).Render("☰  SELECT RESOURCE TYPE")
+	clusterInfo := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" Cluster: %s / Namespace: %s", m.cluster.Name, m.namespace))
 
 	displayTypes := m.typeFiltered
 	if len(displayTypes) == 0 {
@@ -550,23 +532,58 @@ func (m *ResourceModel) viewTypeSelector() string {
 		visibleTypes = displayTypes[:maxVisible]
 	}
 
+	colName := cw - 40
+	if colName < 15 {
+		colName = 15
+	}
+	colShort := 12
+	colPlural := 15
+	colGroup := cw - colName - colShort - colPlural
+	if colGroup < 10 {
+		colGroup = 10
+	}
+
+	headerStyle := lipgloss.NewStyle().
+		Background(lipgloss.Color("#0D0D1A")).
+		Foreground(theme.Gold).
+		Bold(true)
+
+	typeHeaders := []string{"NAME", "SHORT", "PLURAL", "API GROUP"}
+	typeWidths := []int{colName, colShort, colPlural, colGroup}
+	var headerCells []string
+	for i, h := range typeHeaders {
+		headerCells = append(headerCells, lipgloss.NewStyle().Width(typeWidths[i]).Render(h))
+	}
+	typeHeader := headerStyle.Render(lipgloss.JoinHorizontal(lipgloss.Top, headerCells...))
+
+	rowStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0"))
+
 	var entries []string
 	for i, rt := range visibleTypes {
-		prefix := "  "
-		style := lipgloss.NewStyle().Foreground(lipgloss.Color("#E0E0E0"))
+		var cells []string
+		name := theme.Truncate(rt.Name, typeWidths[0])
+		short := theme.Truncate(rt.Short, typeWidths[1])
+		plural := theme.Truncate(rt.Plural, typeWidths[2])
+		group := theme.Truncate(rt.GroupVersion, typeWidths[3])
+
 		if i == m.typeCursor {
-			prefix = "▸ "
-			style = lipgloss.NewStyle().
-				Foreground(theme.Gold).
-				Bold(true).
-				Background(theme.Purple).
-				Padding(0, 1)
+			cells = append(cells, theme.SelectedRowStyle.Width(typeWidths[0]).Render(name))
+			cells = append(cells, theme.SelectedRowStyle.Width(typeWidths[1]).Render(short))
+			cells = append(cells, theme.SelectedRowStyle.Width(typeWidths[2]).Render(plural))
+			cells = append(cells, theme.SelectedRowStyle.Width(typeWidths[3]).Render(group))
+		} else {
+			cells = append(cells, rowStyle.Width(typeWidths[0]).Render(name))
+			cells = append(cells, rowStyle.Width(typeWidths[1]).Render(short))
+			cells = append(cells, rowStyle.Width(typeWidths[2]).Render(plural))
+			cells = append(cells, rowStyle.Width(typeWidths[3]).Render(group))
 		}
-		shortInfo := ""
-		if rt.Short != "" {
-			shortInfo = lipgloss.NewStyle().Foreground(theme.MutedText).Render(fmt.Sprintf(" (%s)", rt.Short))
+		line := lipgloss.JoinHorizontal(lipgloss.Top, cells...)
+		if i == m.typeCursor {
+			line = lipgloss.NewStyle().Foreground(theme.HotPink).Render("▸ ") + line
+		} else {
+			line = "  " + line
 		}
-		entries = append(entries, style.Render(prefix+rt.Name)+"  "+shortInfo)
+		entries = append(entries, line)
 	}
 	if !showAll {
 		remaining := len(displayTypes) - maxVisible
@@ -576,46 +593,52 @@ func (m *ResourceModel) viewTypeSelector() string {
 		entries = append(entries, more)
 	}
 
-	content := lipgloss.JoinVertical(lipgloss.Left, entries...)
-
-	overhead := 6
+	// Limit visible types to available height
+	overhead := 7
 	if isSearching {
-		overhead = 7
+		overhead = 8
 	}
-	m.vp.Width = theme.ViewportWidth(m.width)
-	m.vp.Height = m.height - overhead
-	if m.vp.Height < 3 {
-		m.vp.Height = 3
+	maxRows := m.height - overhead
+	if maxRows < 3 {
+		maxRows = 3
 	}
-	m.vp.SetContent(content)
-	m.scrollTypeCursor()
+	start, end := visibleWindow(m.typeCursor, len(entries), maxRows)
+	entries = entries[start:end]
+
+	content := lipgloss.JoinVertical(lipgloss.Left, entries...)
 
 	m.filter.SetWidth(cw - 4)
 	filterView := m.filter.View()
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
-		nsInfo,
+		clusterInfo,
 		countInfo,
-		filterView,
 		"\n",
-		m.vp.View(),
+		typeHeader,
+		content,
+		filterView,
 		"\n",
 		theme.HelpStyle.Render(" ↑↓ navigate • Enter select • / search • ← back to namespaces"),
 	)
 }
 
-func (m *ResourceModel) scrollTypeCursor() {
-	row := m.typeCursor
-	vpStart := m.vp.YOffset
-	vpEnd := vpStart + m.vp.Height - 1
-	if row < vpStart {
-		m.vp.SetYOffset(row)
-	} else if row > vpEnd {
-		m.vp.SetYOffset(row - m.vp.Height + 1)
+func visibleWindow(cursor, total, max int) (start, end int) {
+	if total <= max {
+		return 0, total
 	}
-	if m.vp.YOffset < 0 {
-		m.vp.YOffset = 0
+	start = cursor - max/2
+	if start < 0 {
+		start = 0
 	}
+	end = start + max
+	if end > total {
+		end = total
+		start = end - max
+		if start < 0 {
+			start = 0
+		}
+	}
+	return
 }
 

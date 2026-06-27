@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/dave/kube-tui/internal/k8s"
 	"github.com/dave/kube-tui/internal/model"
@@ -183,11 +184,10 @@ func (m *NamespaceModel) applyFilter() {
 		return
 	}
 
+	matches := fuzzy.Find(query, m.namespaces)
 	var filtered []string
-	for _, ns := range m.namespaces {
-		if caseInsensitiveContains(ns, query) {
-			filtered = append(filtered, ns)
-		}
+	for _, match := range matches {
+		filtered = append(filtered, m.namespaces[match.Index])
 	}
 	m.filtered = filtered
 }
@@ -204,8 +204,15 @@ func (m *NamespaceModel) View() string {
 	clusterInfo := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" Cluster: %s", m.cluster.Name))
 	countInfo := theme.ResourceCountStyle.Render(fmt.Sprintf(" %d namespaces", len(m.filtered)))
 
+	maxRows := m.height - 6
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	start, end := visibleWindow(m.cursor, len(m.filtered), maxRows)
+
 	var entries []string
-	for i, ns := range m.filtered {
+	for i := start; i < end; i++ {
+		ns := m.filtered[i]
 		prefix := "  "
 		style := theme.NamespaceStyle
 

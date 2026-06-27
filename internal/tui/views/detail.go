@@ -111,6 +111,14 @@ func (m *DetailModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, func() tea.Msg {
 				return ShowLogMsg{Resource: m.resource}
 			}
+		case "d":
+			return m, func() tea.Msg {
+				desc, err := m.resourceMgr.GetResourceDescribe(m.namespace, m.resource.Type, m.resource.Name)
+				if err != nil {
+					desc = fmt.Sprintf("Unable to describe: %v", err)
+				}
+				return ShowDescribeMsg{Describe: desc, Resource: m.resource}
+			}
 		case "backspace", "esc", "q":
 			return m, popViewCmd()
 		case "ctrl+c":
@@ -163,7 +171,7 @@ func (m *DetailModel) View() string {
 
 	info := lipgloss.NewStyle().Width(contentWidth).Padding(0, 2).Foreground(lipgloss.Color("#E0E0E0")).Render(strings.Join(sections, "\n"))
 
-	help := theme.HelpStyle.Render(" y view YAML • l logs • ← back")
+	help := theme.HelpStyle.Render(" y YAML • d describe • l logs • ← back")
 
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
@@ -173,4 +181,10 @@ func (m *DetailModel) View() string {
 		"\n\n",
 		help,
 	)
+}
+
+func (m *DetailModel) SetSize(w, h int) {
+	m.width = w
+	m.height = h
+	m.updateViewportSize()
 }

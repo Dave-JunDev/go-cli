@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -16,25 +15,37 @@ import (
 type YamlModel struct {
 	yaml      string
 	resource  model.K8sResource
-	viewport  viewport.Model
+	yamlLines []string
+	yamlOff   int
 	width     int
 	height    int
 	search    *components.Filter
 	searches  []int
 	searchIdx int
+	mode      string
 }
 
 func NewYamlModel() *YamlModel {
-	vp := viewport.New(80, 20)
 	return &YamlModel{
-		viewport: vp,
-		search:   components.NewFilter("Search YAML...", nil),
+		search: components.NewFilter("Search...", nil),
+		mode:   "YAML",
 	}
+}
+
+func (m *YamlModel) SetMode(mode string) {
+	m.mode = mode
+	title := "Search YAML..."
+	if mode == "Describe" {
+		title = "Search describe..."
+	}
+	m.search = components.NewFilter(title, nil)
 }
 
 func (m *YamlModel) SetYAML(yaml string, r model.K8sResource) {
 	m.yaml = yaml
 	m.resource = r
+	m.yamlLines = strings.Split(yaml, "\n")
+	m.yamlOff = 0
 }
 
 func (m *YamlModel) Init() tea.Cmd {
@@ -44,13 +55,6 @@ func (m *YamlModel) Init() tea.Cmd {
 func (m *YamlModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
-	m.updateSize()
-}
-
-func (m *YamlModel) updateSize() {
-	m.viewport.Width = theme.ViewportWidth(m.width)
-	m.viewport.Height = theme.ViewportHeight(m.height, 8)
-	m.search.SetWidth(theme.ViewportWidth(m.width) - 4)
 }
 
 func (m *YamlModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -58,7 +62,6 @@ func (m *YamlModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.updateSize()
 		return m, nil
 
 	case tea.KeyMsg:
@@ -95,6 +98,45 @@ func (m *YamlModel) handleSearchKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 func (m *YamlModel) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
+	case "up":
+		if m.yamlOff > 0 {
+			m.yamlOff--
+		}
+
+	case "down":
+		visible := m.visibleLines()
+		if m.yamlOff < len(m.yamlLines)-visible {
+			m.yamlOff++
+		}
+
+	case "pgup":
+		visible := m.visibleLines()
+		m.yamlOff -= visible
+		if m.yamlOff < 0 {
+			m.yamlOff = 0
+		}
+
+	case "pgdown":
+		visible := m.visibleLines()
+		m.yamlOff += visible
+		max := len(m.yamlLines) - visible
+		if m.yamlOff > max {
+			m.yamlOff = max
+		}
+		if m.yamlOff < 0 {
+			m.yamlOff = 0
+		}
+
+	case "g":
+		m.yamlOff = 0
+
+	case "G":
+		visible := m.visibleLines()
+		m.yamlOff = len(m.yamlLines) - visible
+		if m.yamlOff < 0 {
+			m.yamlOff = 0
+		}
+
 	case "/":
 		return m, m.search.Focus()
 
@@ -115,14 +157,25 @@ func (m *YamlModel) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "ctrl+c":
 		return m, tea.Quit
-
-	default:
-		var cmd tea.Cmd
-		m.viewport, cmd = m.viewport.Update(msg)
-		return m, cmd
 	}
 
 	return m, nil
+}
+
+func (m *YamlModel) visibleLines() int {
+	searchExtra := 0
+	if m.search.Active() {
+		searchExtra++
+	}
+	if len(m.searches) > 0 {
+		searchExtra++
+	}
+	// Matches maxRows in View(): content = m.height - 8 - searchExtra
+	h := m.height - 8 - searchExtra
+	if h < 3 {
+		h = 3
+	}
+	return h
 }
 
 func (m *YamlModel) runSearch() {
@@ -134,8 +187,7 @@ func (m *YamlModel) runSearch() {
 		return
 	}
 
-	lines := strings.Split(m.yaml, "\n")
-	for i, line := range lines {
+	for i, line := range m.yamlLines {
 		if strings.Contains(strings.ToLower(line), query) {
 			m.searches = append(m.searches, i)
 		}
@@ -147,31 +199,37 @@ func (m *YamlModel) scrollToMatch(idx int) {
 		return
 	}
 	lineNum := m.searches[idx]
-	m.viewport.SetYOffset(lineNum - m.viewport.Height/2)
-	if m.viewport.YOffset < 0 {
-		m.viewport.YOffset = 0
+	visible := m.visibleLines()
+	m.yamlOff = lineNum - visible/2
+	if m.yamlOff < 0 {
+		m.yamlOff = 0
 	}
 }
 
 func (m *YamlModel) View() string {
-	m.updateSize()
-	m.search.SetWidth(theme.ViewportWidth(m.width) - 4)
-
 	cw := theme.ContentWidth(m.width)
-	title := theme.TitleStyle.Copy().Width(cw).Render(fmt.Sprintf("☰  YAML — %s/%s", m.resource.Type, m.resource.Name))
 
-	lines := strings.Split(m.yaml, "\n")
 	query := strings.ToLower(m.search.Value())
 	hasSearch := query != "" && len(m.searches) > 0
 
-	vpW := theme.ViewportWidth(m.width)
-	styled := make([]string, len(lines))
-	for i, line := range lines {
-		display := line
-		if len(display) > vpW-2 {
-			display = display[:vpW-5] + "…"
-		}
+	// cw includes the 2-char TitleStyle padding, so content needs full width
+	contentW := cw
+	if contentW > m.width {
+		contentW = m.width
+	}
+	maxRows := m.height - 8
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	start, end := visibleWindow(m.yamlOff, len(m.yamlLines), maxRows)
 
+	styled := make([]string, 0, end-start)
+	for i := start; i < end; i++ {
+		line := m.yamlLines[i]
+		display := line
+		if len(display) > contentW {
+			display = display[:contentW-1] + "\u2026"
+		}
 		isMatch := hasSearch && m.searchIdx < len(m.searches) && m.searches[m.searchIdx] == i
 		isSearchResult := false
 		for _, s := range m.searches {
@@ -180,25 +238,27 @@ func (m *YamlModel) View() string {
 				break
 			}
 		}
-
 		if isMatch {
-			styled[i] = lipgloss.NewStyle().
+			styled = append(styled, lipgloss.NewStyle().
 				Foreground(theme.Gold).
 				Background(theme.Purple).
 				Bold(true).
-				Render(display)
+				Render(display))
 		} else if isSearchResult {
-			styled[i] = lipgloss.NewStyle().
+			styled = append(styled, lipgloss.NewStyle().
 				Foreground(theme.Orange).
-				Render(display)
+				Render(display))
 		} else {
-			styled[i] = lipgloss.NewStyle().
+			styled = append(styled, lipgloss.NewStyle().
 				Foreground(lipgloss.Color("#E0E0E0")).
-				Render(display)
+				Render(display))
 		}
 	}
 
-	m.viewport.SetContent(strings.Join(styled, "\n"))
+	content := strings.Join(styled, "\n")
+
+	title := theme.TitleStyle.Copy().Width(cw).Render(fmt.Sprintf("☰  %s — %s/%s", m.mode, m.resource.Type, m.resource.Name))
+	subtitle := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" %s / %s", m.resource.Namespace, m.resource.Name))
 
 	filterView := m.search.View()
 
@@ -207,16 +267,15 @@ func (m *YamlModel) View() string {
 		searchInfo = theme.ResourceCountStyle.Render(fmt.Sprintf(" %d/%d matches", m.searchIdx+1, len(m.searches)))
 	}
 
-	help := theme.HelpStyle.Render(" ↑↓ scroll • / search • n/N next match • q back")
+	help := theme.HelpStyle.Render(" \u2191\u2193 scroll \u2022 / search \u2022 n/N next match \u2022 g top \u2022 G bottom \u2022 q back")
 
-	return lipgloss.JoinVertical(lipgloss.Left,
-		title,
-		"\n",
-		m.viewport.View(),
-		"\n",
-		filterView,
-		searchInfo,
-		"\n",
-		help,
-	)
+	out := title + subtitle + "\n" + content
+	if filterView != "" {
+		out += "\n" + filterView
+	}
+	if searchInfo != "" {
+		out += "\n" + searchInfo
+	}
+	out += "\n" + help
+	return out
 }

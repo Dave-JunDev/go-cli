@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/sahilm/fuzzy"
 
 	"github.com/dave/kube-tui/internal/config"
 	"github.com/dave/kube-tui/internal/model"
@@ -49,6 +50,7 @@ func (m *ClusterModel) SetSize(w, h int) {
 
 func (m *ClusterModel) ResetView() {
 	m.loading = false
+	m.err = nil
 	m.filter.Blur()
 	m.filter.SetValue("")
 	m.cursor = 0
@@ -172,13 +174,14 @@ func (m *ClusterModel) applyFilter() {
 		return
 	}
 
+	targets := make([]string, len(m.clusters))
+	for i, c := range m.clusters {
+		targets[i] = c.Name + " " + c.Server + " " + c.Context
+	}
+	matches := fuzzy.Find(query, targets)
 	var filtered []model.Cluster
-	for _, c := range m.clusters {
-		if caseInsensitiveContains(c.Name, query) ||
-			caseInsensitiveContains(c.Server, query) ||
-			caseInsensitiveContains(c.Context, query) {
-			filtered = append(filtered, c)
-		}
+	for _, match := range matches {
+		filtered = append(filtered, m.clusters[match.Index])
 	}
 	m.filtered = filtered
 }
@@ -196,13 +199,21 @@ func (m *ClusterModel) View() string {
 	m.filter.SetWidth(cw - 4)
 
 	title := theme.TitleStyle.Copy().Width(cw).Render("☸  CLUSTER SELECTOR")
-	subtitle := theme.SubtitleStyle.Copy().Width(cw).Render(fmt.Sprintf(" %d clusters available", len(m.clusters)))
+	subtitle := theme.SubtitleStyle.Copy().Width(cw).Render(" Select a cluster to connect")
+	countInfo := theme.ResourceCountStyle.Render(fmt.Sprintf(" %d clusters available", len(m.clusters)))
 
 	descStyle := lipgloss.NewStyle().Foreground(theme.MutedText)
 	selectedDescStyle := lipgloss.NewStyle().Foreground(theme.ElectricBlue)
 
+	maxRows := m.height - 6
+	if maxRows < 3 {
+		maxRows = 3
+	}
+	start, end := visibleWindow(m.cursor, len(m.filtered), maxRows)
+
 	var entries []string
-	for i, c := range m.filtered {
+	for i := start; i < end; i++ {
+		c := m.filtered[i]
 		desc := fmt.Sprintf("%s  %s", c.Context, c.Server)
 		if i == m.cursor {
 			line := lipgloss.NewStyle().
@@ -228,8 +239,9 @@ func (m *ClusterModel) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left,
 		title,
 		subtitle,
-		filterView,
+		countInfo,
 		"\n",
+		filterView,
 		content,
 		"\n",
 		theme.HelpStyle.Render(" ↑↓ navigate • Enter select • / search • q quit"),
@@ -243,42 +255,4 @@ func (m *ClusterModel) SelectedCluster() *model.Cluster {
 	return &m.filtered[m.cursor]
 }
 
-func caseInsensitiveContains(s, substr string) bool {
-	s, substr = toLower(s), toLower(substr)
-	return contains(s, substr)
-}
 
-func toLower(s string) string {
-	b := make([]byte, len(s))
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if c >= 'A' && c <= 'Z' {
-			c += 32
-		}
-		b[i] = c
-	}
-	return string(b)
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && findSubstring(s, substr) >= 0
-}
-
-func findSubstring(s, substr string) int {
-	if len(substr) == 0 {
-		return 0
-	}
-	for i := 0; i <= len(s)-len(substr); i++ {
-		match := true
-		for j := 0; j < len(substr); j++ {
-			if s[i+j] != substr[j] {
-				match = false
-				break
-			}
-		}
-		if match {
-			return i
-		}
-	}
-	return -1
-}

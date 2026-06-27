@@ -3,6 +3,7 @@ package k8s
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -20,10 +21,17 @@ import (
 type ResourceManager struct {
 	clientset  *kubernetes.Clientset
 	restConfig *rest.Config
+	discoveredGVRs map[string]schema.GroupVersionResource
+	discoveredNS   map[string]bool
 }
 
 func NewResourceManager(clientset *kubernetes.Clientset, restConfig *rest.Config) *ResourceManager {
-	return &ResourceManager{clientset: clientset, restConfig: restConfig}
+	return &ResourceManager{
+		clientset:      clientset,
+		restConfig:     restConfig,
+		discoveredGVRs: make(map[string]schema.GroupVersionResource),
+		discoveredNS:   make(map[string]bool),
+	}
 }
 
 func (rm *ResourceManager) ListNamespaces() ([]string, error) {
@@ -378,8 +386,8 @@ var resourceGVRs = map[string]schema.GroupVersionResource{
 }
 
 func (rm *ResourceManager) resolveResource(resourceType string) (schema.GroupVersionResource, bool, error) {
+	// Check hardcoded map first
 	if gvr, ok := resourceGVRs[resourceType]; ok {
-		// Default: most CRDs are namespaced; core cluster-scoped ones are handled by the map
 		namespaced := true
 		switch resourceType {
 		case "nodes", "persistentvolumes", "namespaces":
@@ -388,6 +396,12 @@ func (rm *ResourceManager) resolveResource(resourceType string) (schema.GroupVer
 		return gvr, namespaced, nil
 	}
 
+	// Check discovered cache
+	if gvr, ok := rm.discoveredGVRs[resourceType]; ok {
+		return gvr, rm.discoveredNS[resourceType], nil
+	}
+
+	// Fall back to discovery
 	discovery := rm.clientset.DiscoveryClient
 	_, apiResources, err := discovery.ServerGroupsAndResources()
 	if err != nil {
@@ -401,16 +415,177 @@ func (rm *ResourceManager) resolveResource(resourceType string) (schema.GroupVer
 		}
 		for _, r := range list.APIResources {
 			if r.Name == resourceType {
-				return schema.GroupVersionResource{
+				gvr := schema.GroupVersionResource{
 					Group:    gv.Group,
 					Version:  gv.Version,
 					Resource: resourceType,
-				}, r.Namespaced, nil
+				}
+				rm.discoveredGVRs[resourceType] = gvr
+				rm.discoveredNS[resourceType] = r.Namespaced
+				return gvr, r.Namespaced, nil
 			}
 		}
 	}
 
 	return schema.GroupVersionResource{}, false, fmt.Errorf("resource type %q not found via discovery", resourceType)
+}
+
+func (rm *ResourceManager) GetResourceDescribe(namespace, resourceType, name string) (string, error) {
+	gvr, _, err := rm.resolveResource(resourceType)
+	if err != nil {
+		return "", err
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(rm.restConfig)
+	if err != nil {
+		return "", fmt.Errorf("dynamic client: %w", err)
+	}
+
+	var obj *unstructured.Unstructured
+	if namespace != "" {
+		obj, err = dynamicClient.Resource(gvr).Namespace(namespace).Get(context.TODO(), name, metav1.GetOptions{})
+	} else {
+		obj, err = dynamicClient.Resource(gvr).Get(context.TODO(), name, metav1.GetOptions{})
+	}
+
+	if err != nil {
+		return "", fmt.Errorf("get %s/%s: %w", resourceType, name, err)
+	}
+
+	lines := formatDescribe(obj, resourceType)
+	return strings.Join(lines, "\n"), nil
+}
+
+func formatDescribe(obj *unstructured.Unstructured, resourceType string) []string {
+	var lines []string
+
+	metadata := obj.Object["metadata"].(map[string]interface{})
+	lines = append(lines, fmt.Sprintf("Name:\t%s", metadata["name"]))
+	if ns, ok := metadata["namespace"]; ok {
+		lines = append(lines, fmt.Sprintf("Namespace:\t%s", ns))
+	}
+	lines = append(lines, fmt.Sprintf("Type:\t%s", resourceType))
+
+	if uid, ok := metadata["uid"]; ok {
+		lines = append(lines, fmt.Sprintf("UID:\t%s", uid))
+	}
+	if created, ok := metadata["creationTimestamp"]; ok {
+		lines = append(lines, fmt.Sprintf("Created:\t%s", created))
+	}
+	if gen, ok := metadata["generation"]; ok {
+		lines = append(lines, fmt.Sprintf("Generation:\t%v", gen))
+	}
+
+	if labels, ok := metadata["labels"].(map[string]interface{}); ok && len(labels) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Labels:")
+		for k, v := range labels {
+			lines = append(lines, fmt.Sprintf("  %s=%s", k, v))
+		}
+	}
+
+	if annotations, ok := metadata["annotations"].(map[string]interface{}); ok && len(annotations) > 0 {
+		lines = append(lines, "")
+		lines = append(lines, "Annotations:")
+		for k, v := range annotations {
+			lines = append(lines, fmt.Sprintf("  %s=%s", k, v))
+		}
+	}
+
+	// Status
+	if status, ok := obj.Object["status"].(map[string]interface{}); ok {
+		lines = append(lines, "")
+		lines = append(lines, "Status:")
+		formatStatusFields(status, "", &lines)
+	}
+
+	// Spec
+	if spec, ok := obj.Object["spec"].(map[string]interface{}); ok {
+		lines = append(lines, "")
+		lines = append(lines, "Spec:")
+		formatStatusFields(spec, "  ", &lines)
+	}
+
+	return lines
+}
+
+func formatStatusFields(m map[string]interface{}, indent string, lines *[]string) {
+	for k, v := range m {
+		switch val := v.(type) {
+		case string:
+			if val != "" {
+				*lines = append(*lines, fmt.Sprintf("%s%s:\t%s", indent, k, val))
+			}
+		case float64:
+			*lines = append(*lines, fmt.Sprintf("%s%s:\t%v", indent, k, val))
+		case bool:
+			*lines = append(*lines, fmt.Sprintf("%s%s:\t%v", indent, k, val))
+		case map[string]interface{}:
+			*lines = append(*lines, fmt.Sprintf("%s%s:", indent, k))
+			formatStatusFields(val, indent+"  ", lines)
+		case []interface{}:
+			if len(val) > 0 {
+				*lines = append(*lines, fmt.Sprintf("%s%s:", indent, k))
+				for i, item := range val {
+					switch itemVal := item.(type) {
+					case map[string]interface{}:
+						formatStatusFields(itemVal, indent+"  ", lines)
+					default:
+						*lines = append(*lines, fmt.Sprintf("%s  %d:\t%v", indent, i, itemVal))
+					}
+				}
+			}
+		}
+	}
+}
+
+func (rm *ResourceManager) DiscoverResourceTypes() ([]model.ResourceType, error) {
+	_, apiResources, err := rm.clientset.DiscoveryClient.ServerGroupsAndResources()
+	if err != nil {
+		return nil, fmt.Errorf("discovery: %w", err)
+	}
+
+	typeKey := func(plural string) string { return plural }
+
+	seen := make(map[string]bool)
+	var types []model.ResourceType
+
+	for _, list := range apiResources {
+		gv, err := schema.ParseGroupVersion(list.GroupVersion)
+		if err != nil {
+			continue
+		}
+
+		for _, r := range list.APIResources {
+			if !strings.Contains(r.Name, "/") && !seen[typeKey(r.Name)] {
+				seen[typeKey(r.Name)] = true
+				name := r.Kind
+				if name == "" {
+					name = r.SingularName
+				}
+				if name == "" {
+					name = r.Name
+				}
+				gvStr := gv.Group + "/" + gv.Version
+				if gv.Group == "" {
+					gvStr = gv.Version
+				}
+
+				short := ""
+				if len(r.ShortNames) > 0 {
+					short = r.ShortNames[0]
+				}
+
+				types = append(types, model.ResourceType{
+					Name:         name,
+					Short:        short,
+					Plural:       r.Name,
+					GroupVersion: gvStr,
+				})
+			}
+		}
+	}
+	return types, nil
 }
 
 func (rm *ResourceManager) GetResourceYAML(namespace, resourceType, name string) (string, error) {
