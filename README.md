@@ -40,8 +40,8 @@ k8s-ui
 
 | Key | Action |
 |-----|--------|
-| `y` | Full YAML (scrollable, `/` search, `n`/`N` cycle) |
-| `d` | Describe output (formatted like `kubectl describe`) |
+| `y` | Full YAML (scrollable, `/` search, `n`/`N` cycle, `s` save) |
+| `d` | Describe output (formatted like `kubectl describe`, `s` save) |
 | `l` | Live log stream |
 
 **Log view** — Streaming logs with container selector. `/` to search.
@@ -52,7 +52,10 @@ k8s-ui
 | `pgup`/`pgdown` | Page scroll |
 | `f` | Toggle follow mode |
 | `/` | Search, `n`/`N` cycle matches |
+| `s` | Save logs to file |
 | `g`/`G` | Top/bottom |
+
+All YAML, Describe, and Log views support `s` to save content to a file. A path prompt appears with a default location (`~/k8s-ui/<timestamp>-<name>.<ext>`). Edit the path and press enter to save, or esc to cancel.
 
 ## Requirements
 

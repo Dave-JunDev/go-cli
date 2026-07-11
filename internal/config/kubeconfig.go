@@ -4,14 +4,20 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 
 	"k8s.io/client-go/tools/clientcmd"
 
 	"github.com/dave/kube-tui/internal/model"
 )
 
-func DiscoverKubeconfigs() ([]string, error) {
-	var files []string
+type kubeconfigEntry struct {
+	Path  string
+	Group string
+}
+
+func DiscoverKubeconfigs() ([]kubeconfigEntry, error) {
+	var entries []kubeconfigEntry
 
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -20,30 +26,42 @@ func DiscoverKubeconfigs() ([]string, error) {
 
 	defaultPath := filepath.Join(home, ".kube", "config")
 	if _, err := os.Stat(defaultPath); err == nil {
-		files = append(files, defaultPath)
+		entries = append(entries, kubeconfigEntry{Path: defaultPath, Group: "default"})
 	}
 
 	configsDir := filepath.Join(home, ".kube", "configs")
-	if entries, err := os.ReadDir(configsDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() {
-				files = append(files, filepath.Join(configsDir, e.Name()))
-			}
-		}
-	}
+	entries = append(entries, scanDir(configsDir, "")...)
 
-	if len(files) == 0 {
+	if len(entries) == 0 {
 		return nil, fmt.Errorf("no kubeconfig files found in ~/.kube/config or ~/.kube/configs/")
 	}
 
-	return files, nil
+	return entries, nil
 }
 
-func LoadClusters(files []string) ([]model.Cluster, error) {
+func scanDir(dir, group string) []kubeconfigEntry {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+
+	var result []kubeconfigEntry
+	for _, e := range entries {
+		path := filepath.Join(dir, e.Name())
+		if e.IsDir() {
+			result = append(result, scanDir(path, e.Name())...)
+		} else {
+			result = append(result, kubeconfigEntry{Path: path, Group: group})
+		}
+	}
+	return result
+}
+
+func LoadClusters(entries []kubeconfigEntry) ([]model.Cluster, error) {
 	var clusters []model.Cluster
 
-	for _, path := range files {
-		cfg, err := clientcmd.LoadFromFile(path)
+	for _, entry := range entries {
+		cfg, err := clientcmd.LoadFromFile(entry.Path)
 		if err != nil {
 			continue
 		}
@@ -55,14 +73,27 @@ func LoadClusters(files []string) ([]model.Cluster, error) {
 				server = cluster.Server
 			}
 
+			group := entry.Group
+			if group == "" {
+				group = "other"
+			}
+
 			clusters = append(clusters, model.Cluster{
-				Name:       fmt.Sprintf("%s / %s", filepath.Base(path), ctxName),
-				Kubeconfig: path,
+				Name:       fmt.Sprintf("%s / %s", filepath.Base(entry.Path), ctxName),
+				Kubeconfig: entry.Path,
 				Context:    ctxName,
 				Server:     server,
+				Group:      group,
 			})
 		}
 	}
+
+	sort.Slice(clusters, func(i, j int) bool {
+		if clusters[i].Group != clusters[j].Group {
+			return clusters[i].Group < clusters[j].Group
+		}
+		return clusters[i].Name < clusters[j].Name
+	})
 
 	return clusters, nil
 }

@@ -2,8 +2,12 @@ package views
 
 import (
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -23,12 +27,20 @@ type YamlModel struct {
 	searches  []int
 	searchIdx int
 	mode      string
+	saveInput textinput.Model
+	saveMode  bool
 }
 
 func NewYamlModel() *YamlModel {
+	si := textinput.New()
+	si.Placeholder = "~/k8s-ui/resource.yaml"
+	si.Prompt = "💾 "
+	si.Width = 60
+	si.CharLimit = 200
 	return &YamlModel{
-		search: components.NewFilter("Search...", nil),
-		mode:   "YAML",
+		search:    components.NewFilter("Search...", nil),
+		mode:      "YAML",
+		saveInput: si,
 	}
 }
 
@@ -55,6 +67,7 @@ func (m *YamlModel) Init() tea.Cmd {
 func (m *YamlModel) SetSize(w, h int) {
 	m.width = w
 	m.height = h
+	m.saveInput.Width = theme.ContentWidth(m.width) - 10
 }
 
 func (m *YamlModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -62,9 +75,13 @@ func (m *YamlModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.saveInput.Width = theme.ContentWidth(m.width) - 10
 		return m, nil
 
 	case tea.KeyMsg:
+		if m.saveMode {
+			return m.handleSaveKey(msg)
+		}
 		if m.search.Active() {
 			return m.handleSearchKey(msg)
 		}
@@ -152,6 +169,11 @@ func (m *YamlModel) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.scrollToMatch(m.searchIdx)
 		}
 
+	case "s":
+		m.saveMode = true
+		m.saveInput.SetValue(m.defaultSavePath())
+		return m, m.saveInput.Focus()
+
 	case "backspace", "esc", "q":
 		return m, popViewCmd()
 
@@ -162,16 +184,57 @@ func (m *YamlModel) handleNavigationKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m *YamlModel) handleSaveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		path := m.saveInput.Value()
+		if path == "" {
+			m.saveMode = false
+			return m, nil
+		}
+		m.saveMode = false
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return m, tea.Println(fmt.Sprintf("Save error: creating directory: %v", err))
+		}
+		if err := os.WriteFile(path, []byte(m.yaml), 0644); err != nil {
+			return m, tea.Println(fmt.Sprintf("Save error: writing file: %v", err))
+		}
+		return m, tea.Println(fmt.Sprintf("Saved to %s", path))
+
+	case "esc":
+		m.saveMode = false
+		m.saveInput.Blur()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.saveInput, cmd = m.saveInput.Update(msg)
+	return m, cmd
+}
+
+func (m *YamlModel) defaultSavePath() string {
+	home, _ := os.UserHomeDir()
+	ts := time.Now().Format("20060102_150405")
+	name := fmt.Sprintf("%s-%s-%s.%s", strings.ToLower(m.mode), m.resource.Namespace, m.resource.Name, "yaml")
+	if m.mode == "Describe" {
+		name = fmt.Sprintf("describe-%s-%s.txt", m.resource.Namespace, m.resource.Name)
+	}
+	return filepath.Join(home, "k8s-ui", ts+"-"+name)
+}
+
 func (m *YamlModel) visibleLines() int {
-	searchExtra := 0
+	extra := 0
 	if m.search.Active() {
-		searchExtra++
+		extra++
 	}
 	if len(m.searches) > 0 {
-		searchExtra++
+		extra++
 	}
-	// Matches maxRows in View(): content = m.height - 8 - searchExtra
-	h := m.height - 8 - searchExtra
+	if m.saveMode {
+		extra++
+	}
+	// Matches maxRows in View(): content = m.height - 8 - extra
+	h := m.height - 8 - extra
 	if h < 3 {
 		h = 3
 	}
@@ -217,7 +280,17 @@ func (m *YamlModel) View() string {
 	if contentW > m.width {
 		contentW = m.width
 	}
-	maxRows := m.height - 8
+	extra := 0
+	if m.search.Active() {
+		extra++
+	}
+	if len(m.searches) > 0 {
+		extra++
+	}
+	if m.saveMode {
+		extra++
+	}
+	maxRows := m.height - 8 - extra
 	if maxRows < 3 {
 		maxRows = 3
 	}
@@ -267,7 +340,7 @@ func (m *YamlModel) View() string {
 		searchInfo = theme.ResourceCountStyle.Render(fmt.Sprintf(" %d/%d matches", m.searchIdx+1, len(m.searches)))
 	}
 
-	help := theme.HelpStyle.Render(" \u2191\u2193 scroll \u2022 / search \u2022 n/N next match \u2022 g top \u2022 G bottom \u2022 q back")
+	help := theme.HelpStyle.Render(" \u2191\u2193 scroll \u2022 / search \u2022 n/N next match \u2022 s save \u2022 g top \u2022 G bottom \u2022 q back")
 
 	out := title + subtitle + "\n" + content
 	if filterView != "" {
@@ -275,6 +348,9 @@ func (m *YamlModel) View() string {
 	}
 	if searchInfo != "" {
 		out += "\n" + searchInfo
+	}
+	if m.saveMode {
+		out += "\n" + m.saveInput.View()
 	}
 	out += "\n" + help
 	return out

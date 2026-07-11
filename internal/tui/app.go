@@ -26,6 +26,7 @@ type AppModel struct {
 	detailModel    *views.DetailModel
 	logModel       *views.LogModel
 	yamlModel      *views.YamlModel
+	configModel    *views.ConfigModel
 
 	statusBar *components.StatusBar
 
@@ -46,12 +47,14 @@ func NewAppModel() *AppModel {
 	dm := views.NewDetailModel()
 	lm := views.NewLogModel()
 	ym := views.NewYamlModel()
+	cgm := views.NewConfigModel()
 
 	cm.SetStatusBar(sb)
 	nm.SetStatusBar(sb)
 	rm.SetStatusBar(sb)
 	dm.SetStatusBar(sb)
 	lm.SetStatusBar(sb)
+	cgm.SetStatusBar(sb)
 
 	return &AppModel{
 		currentView:  model.ClusterSelect,
@@ -61,6 +64,7 @@ func NewAppModel() *AppModel {
 		detailModel: dm,
 		logModel:    lm,
 		yamlModel:   ym,
+		configModel: cgm,
 		statusBar:   sb,
 	}
 }
@@ -93,12 +97,25 @@ func (m *AppModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.updateLogs(msg)
 	case model.YamlView:
 		return m.updateYaml(msg)
+	case model.ConfigView:
+		return m.updateConfig(msg)
 	}
 
 	return m, nil
 }
 
 func (m *AppModel) updateClusters(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Check for 'c' key to open config before passing to cluster model
+	if keyMsg, ok := msg.(tea.KeyMsg); ok && keyMsg.String() == "c" {
+		m.configModel.SetClusters(m.clusterModel.Clusters())
+		m.configModel.SetSize(m.width, m.height)
+		m.previousView = m.currentView
+		m.currentView = model.ConfigView
+		m.statusBar.SetMode("config")
+		m.statusBar.ClearError()
+		return m, m.configModel.Init()
+	}
+
 	updated, cmd := m.clusterModel.Update(msg)
 
 	if sel, ok := msg.(views.ClusterSelectedMsg); ok {
@@ -314,6 +331,25 @@ func (m *AppModel) updateYaml(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+func (m *AppModel) updateConfig(msg tea.Msg) (tea.Model, tea.Cmd) {
+	updated, cmd := m.configModel.Update(msg)
+
+	if _, ok := msg.(views.PopViewMsg); ok {
+		m.clusterModel.ResetView()
+		m.clusterModel.SetSize(m.width, m.height)
+		m.currentView = model.ClusterSelect
+		m.statusBar.SetMode("clusters")
+		m.statusBar.ClearError()
+		return m, nil
+	}
+
+	if cgm, ok := updated.(*views.ConfigModel); ok {
+		m.configModel = cgm
+	}
+
+	return m, cmd
+}
+
 func (m *AppModel) View() string {
 	var content string
 
@@ -330,6 +366,8 @@ func (m *AppModel) View() string {
 		content = m.logModel.View()
 	case model.YamlView:
 		content = m.yamlModel.View()
+	case model.ConfigView:
+		content = m.configModel.View()
 	}
 
 	sb := m.statusBar.View(theme.StatusBarWidth(m.width))

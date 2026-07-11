@@ -5,8 +5,12 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	corev1 "k8s.io/api/core/v1"
@@ -37,11 +41,19 @@ type LogModel struct {
 	search      *components.Filter
 	searches    []int
 	searchIdx   int
+	saveInput   textinput.Model
+	saveMode    bool
 }
 
 func NewLogModel() *LogModel {
+	si := textinput.New()
+	si.Placeholder = "~/k8s-ui/pod.log"
+	si.Prompt = "💾 "
+	si.Width = 60
+	si.CharLimit = 200
 	return &LogModel{
-		search: components.NewFilter("Search logs...", nil),
+		search:    components.NewFilter("Search logs...", nil),
+		saveInput: si,
 	}
 }
 
@@ -66,6 +78,7 @@ func (m *LogModel) SetSize(w, h int) {
 		sw = 40
 	}
 	m.search.SetWidth(sw)
+	m.saveInput.Width = sw - 10
 }
 
 func (m *LogModel) Init() tea.Cmd {
@@ -108,17 +121,20 @@ type logLineMsg struct {
 type logDoneMsg struct{}
 
 func (m *LogModel) visibleLogLines() int {
-	searchExtra := 0
+	extra := 0
 	if m.search.Active() {
-		searchExtra++
+		extra++
 	}
 	if len(m.searches) > 0 {
-		searchExtra++
+		extra++
+	}
+	if m.saveMode {
+		extra++
 	}
 	// View: header (2) + \n + content + \n + help = content + 5
 	// app.go: content + \n + statusbar = content + 7 total
-	// total = height => content = height - 7 - searchExtra
-	h := m.height - 7 - searchExtra
+	// total = height => content = height - 7 - extra
+	h := m.height - 7 - extra
 	if h < 3 {
 		h = 3
 	}
@@ -174,6 +190,7 @@ func (m *LogModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			sw = 40
 		}
 		m.search.SetWidth(sw)
+		m.saveInput.Width = sw - 10
 
 	case containersLoadedMsg:
 		m.containers = msg.containers
@@ -207,6 +224,9 @@ func (m *LogModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		if m.selectingContainer {
 			return m.handleContainerKey(msg)
+		}
+		if m.saveMode {
+			return m.handleLogSaveKey(msg)
 		}
 		if m.search.Active() {
 			return m.handleSearchKey(msg)
@@ -325,6 +345,42 @@ func (m *LogModel) scrollToMatch(idx int) {
 	}
 }
 
+func (m *LogModel) handleLogSaveKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "enter":
+		path := m.saveInput.Value()
+		if path == "" {
+			m.saveMode = false
+			return m, nil
+		}
+		m.saveMode = false
+		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+			return m, tea.Println(fmt.Sprintf("Save error: creating directory: %v", err))
+		}
+		content := strings.Join(m.logContent, "\n") + "\n"
+		if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+			return m, tea.Println(fmt.Sprintf("Save error: writing file: %v", err))
+		}
+		return m, tea.Println(fmt.Sprintf("Saved to %s", path))
+
+	case "esc":
+		m.saveMode = false
+		m.saveInput.Blur()
+		return m, nil
+	}
+
+	var cmd tea.Cmd
+	m.saveInput, cmd = m.saveInput.Update(msg)
+	return m, cmd
+}
+
+func (m *LogModel) defaultLogSavePath() string {
+	home, _ := os.UserHomeDir()
+	ts := time.Now().Format("20060102_150405")
+	name := fmt.Sprintf("logs-%s-%s.log", m.namespace, m.resource.Name)
+	return filepath.Join(home, "k8s-ui", ts+"-"+name)
+}
+
 func (m *LogModel) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "up", "k":
@@ -387,6 +443,11 @@ func (m *LogModel) handleLogKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.searchIdx = (m.searchIdx - 1 + len(m.searches)) % len(m.searches)
 			m.scrollToMatch(m.searchIdx)
 		}
+
+	case "s":
+		m.saveMode = true
+		m.saveInput.SetValue(m.defaultLogSavePath())
+		return m, m.saveInput.Focus()
 
 	case "backspace", "esc", "q":
 		if m.cancelFunc != nil {
@@ -504,7 +565,7 @@ func (m *LogModel) View() string {
 		searchInfo = theme.ResourceCountStyle.Render(fmt.Sprintf(" %d/%d matches", m.searchIdx+1, len(m.searches)))
 	}
 
-	help := theme.HelpStyle.Render(" \u2191\u2193 scroll \u2022 f toggle follow \u2022 / search \u2022 n/N next \u2022 g top \u2022 G bottom \u2022 q back")
+	help := theme.HelpStyle.Render(" \u2191\u2193 scroll \u2022 f follow \u2022 s save \u2022 / search \u2022 n/N next \u2022 g top \u2022 G bottom \u2022 q back")
 
 	out := fmt.Sprintf("%s%s%s\n%s", title, nsInfo, followIndicator, logText)
 	if filterView != "" {
@@ -512,6 +573,9 @@ func (m *LogModel) View() string {
 	}
 	if searchInfo != "" {
 		out += "\n" + searchInfo
+	}
+	if m.saveMode {
+		out += "\n" + m.saveInput.View()
 	}
 	out += "\n" + help
 	return out

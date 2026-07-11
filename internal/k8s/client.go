@@ -2,6 +2,7 @@ package k8s
 
 import (
 	"fmt"
+	"time"
 
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -46,4 +47,18 @@ func NewRESTConfig(cluster model.Cluster) (*rest.Config, error) {
 func CheckConnection(clientset *kubernetes.Clientset) error {
 	_, err := clientset.ServerVersion()
 	return err
+}
+
+func CheckClusterHealth(cluster model.Cluster) error {
+	clientConfig := config.BuildClientConfig(cluster)
+	restConfig, err := clientConfig.ClientConfig()
+	if err != nil {
+		return err
+	}
+	restConfig.Timeout = 5 * time.Second
+	clientset, err := kubernetes.NewForConfig(restConfig)
+	if err != nil {
+		return err
+	}
+	return CheckConnection(clientset)
 }

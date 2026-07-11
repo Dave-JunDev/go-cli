@@ -358,6 +358,30 @@ func (rm *ResourceManager) ListDynamic(namespace, resourceType string) ([]model.
 	return resources, nil
 }
 
+func (rm *ResourceManager) ListUnstructured(namespace, resourceType string) ([]unstructured.Unstructured, error) {
+	gvr, namespaced, err := rm.resolveResource(resourceType)
+	if err != nil {
+		return nil, err
+	}
+
+	dynamicClient, err := dynamic.NewForConfig(rm.restConfig)
+	if err != nil {
+		return nil, fmt.Errorf("dynamic client: %w", err)
+	}
+
+	var list *unstructured.UnstructuredList
+	if namespaced && namespace != "" {
+		list, err = dynamicClient.Resource(gvr).Namespace(namespace).List(context.TODO(), metav1.ListOptions{})
+	} else {
+		list, err = dynamicClient.Resource(gvr).List(context.TODO(), metav1.ListOptions{})
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list %s: %w", resourceType, err)
+	}
+
+	return list.Items, nil
+}
+
 var resourceGVRs = map[string]schema.GroupVersionResource{
 	"pods":                     {Version: "v1", Resource: "pods"},
 	"services":                 {Version: "v1", Resource: "services"},
@@ -371,6 +395,7 @@ var resourceGVRs = map[string]schema.GroupVersionResource{
 	"deployments":              {Group: "apps", Version: "v1", Resource: "deployments"},
 	"statefulsets":             {Group: "apps", Version: "v1", Resource: "statefulsets"},
 	"daemonsets":               {Group: "apps", Version: "v1", Resource: "daemonsets"},
+	"replicasets":              {Group: "apps", Version: "v1", Resource: "replicasets"},
 	"ingresses":                {Group: "networking.k8s.io", Version: "v1", Resource: "ingresses"},
 	"virtualservices":          {Group: "networking.istio.io", Version: "v1beta1", Resource: "virtualservices"},
 	"gateways":                 {Group: "networking.istio.io", Version: "v1beta1", Resource: "gateways"},

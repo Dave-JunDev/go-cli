@@ -9,6 +9,7 @@ const (
 	ResourceDetail
 	LogView
 	YamlView
+	ConfigView
 )
 
 type Cluster struct {
@@ -16,6 +17,7 @@ type Cluster struct {
 	Kubeconfig string
 	Context    string
 	Server     string
+	Group      string
 }
 
 type ResourceType struct {
